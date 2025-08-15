@@ -6,6 +6,7 @@ using JQLBridge.Core.QueryEngine.Handlers;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Spectre.Console;
 
 var builder = Host.CreateApplicationBuilder(args);
@@ -26,6 +27,10 @@ if (args.Length == 0)
 {
     AnsiConsole.MarkupLine("[red]Usage: JQLBridge.Cli \"<natural language query>\"[/]");
     AnsiConsole.MarkupLine("[yellow]Example: JQLBridge.Cli \"show bugs assigned to me updated last 7 days\"[/]");
+    AnsiConsole.WriteLine();
+    AnsiConsole.MarkupLine("[blue]Configuration:[/]");
+    AnsiConsole.MarkupLine("  Mock mode:  [green]USE_MOCKS=true[/] (default)");
+    AnsiConsole.MarkupLine("  Real JIRA:  [green]USE_MOCKS=false JIRA_BASE_URL=https://yourcompany.atlassian.net JIRA_EMAIL=you@company.com JIRA_TOKEN=your_api_token[/]");
     return 1;
 }
 
@@ -82,10 +87,28 @@ static void RegisterServices(IServiceCollection services, IConfiguration configu
 {
     var useMocks = configuration.GetValue<bool>("USE_MOCKS", true);
     
+    // Configure Jira client
+    if (useMocks)
+    {
+        services.AddSingleton<IJiraClient, MockJiraClient>();
+    }
+    else
+    {
+        var jiraConfig = new JiraConfiguration(
+            BaseUrl: configuration["JIRA_BASE_URL"],
+            Email: configuration["JIRA_EMAIL"],
+            ApiToken: configuration["JIRA_TOKEN"]
+        );
+        
+        services.AddSingleton(jiraConfig);
+        services.AddHttpClient<JiraApiClient>();
+        services.AddSingleton<IJiraClient, JiraApiClient>();
+    }
+    
+    // Configure LLM client
     if (useMocks)
     {
         services.AddSingleton<ILlmClient, MockLlmClient>();
-        services.AddSingleton<IJiraClient, MockJiraClient>();
     }
     
     services.AddSingleton<IQueryHandlerRegistry>(provider =>
