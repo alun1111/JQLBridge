@@ -1,8 +1,10 @@
+using Anthropic.SDK;
 using JQLBridge.Core.Domain;
 using JQLBridge.Core.Jira;
 using JQLBridge.Core.Llm;
 using JQLBridge.Core.QueryEngine;
 using JQLBridge.Core.QueryEngine.Handlers;
+using OpenAI.Chat;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -31,6 +33,11 @@ if (args.Length == 0)
     AnsiConsole.MarkupLine("[blue]Configuration:[/]");
     AnsiConsole.MarkupLine("  Mock mode:  [green]USE_MOCKS=true[/] (default)");
     AnsiConsole.MarkupLine("  Real JIRA:  [green]USE_MOCKS=false JIRA_BASE_URL=https://yourcompany.atlassian.net JIRA_EMAIL=you@company.com JIRA_TOKEN=your_api_token[/]");
+    AnsiConsole.WriteLine();
+    AnsiConsole.MarkupLine("[blue]LLM Configuration:[/]");
+    AnsiConsole.MarkupLine("  Mock LLM:   [green]LLM_PROVIDER=Mock[/] (default)");
+    AnsiConsole.MarkupLine("  OpenAI:     [green]LLM_PROVIDER=OpenAI LLM_API_KEY=your_openai_key[/]");
+    AnsiConsole.MarkupLine("  Anthropic:  [green]LLM_PROVIDER=Anthropic LLM_API_KEY=your_anthropic_key[/]");
     return 1;
 }
 
@@ -106,9 +113,47 @@ static void RegisterServices(IServiceCollection services, IConfiguration configu
     }
     
     // Configure LLM client
-    if (useMocks)
+    var llmConfig = LlmConfiguration.FromEnvironment();
+    
+    if (useMocks || llmConfig.Provider == LlmProvider.Mock)
     {
         services.AddSingleton<ILlmClient, MockLlmClient>();
+    }
+    else
+    {
+        switch (llmConfig.Provider)
+        {
+            case LlmProvider.OpenAI:
+                if (llmConfig.OpenAI == null)
+                {
+                    throw new InvalidOperationException("OpenAI configuration is missing. Set LLM_API_KEY environment variable.");
+                }
+                
+                services.AddSingleton(llmConfig.OpenAI);
+                services.AddSingleton<ChatClient>(provider => 
+                    new ChatClient(model: llmConfig.OpenAI.Model, apiKey: llmConfig.OpenAI.ApiKey));
+                services.AddSingleton<ILlmClient, OpenAILlmClient>();
+                break;
+                
+            case LlmProvider.Anthropic:
+                if (llmConfig.Anthropic == null)
+                {
+                    throw new InvalidOperationException("Anthropic configuration is missing. Set LLM_API_KEY environment variable.");
+                }
+                
+                services.AddSingleton(llmConfig.Anthropic);
+                services.AddSingleton<AnthropicClient>(provider =>
+                    new AnthropicClient(llmConfig.Anthropic.ApiKey));
+                services.AddSingleton<ILlmClient, AnthropicLlmClient>();
+                break;
+                
+            default:
+                services.AddSingleton<ILlmClient, MockLlmClient>();
+                break;
+        }
+        
+        // Wrap with resilient client for retry logic
+        services.Decorate<ILlmClient, ResilientLlmClient>();
     }
     
     services.AddSingleton<IQueryHandlerRegistry>(provider =>
