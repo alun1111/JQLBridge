@@ -36,19 +36,36 @@ public class MockLlmClient : ILlmClient
 
     public Task<QueryIntent> ParseNaturalLanguageAsync(string prompt, CancellationToken cancellationToken = default)
     {
+        return ParseNaturalLanguageAsync(prompt, false, cancellationToken);
+    }
+
+    public Task<QueryIntent> ParseNaturalLanguageAsync(string prompt, bool debug, CancellationToken cancellationToken = default)
+    {
         var normalizedPrompt = prompt.ToLowerInvariant().Trim();
+        
+        if (debug)
+        {
+            Console.WriteLine($"   📝 Mock LLM processing: '{prompt}'");
+            Console.WriteLine($"   🔍 Normalized prompt: '{normalizedPrompt}'");
+        }
         
         // Try exact matches first
         foreach (var preset in PresetResponses)
         {
             if (normalizedPrompt.Contains(preset.Key))
             {
+                if (debug) Console.WriteLine($"   ✅ Found preset match for: '{preset.Key}'");
                 return Task.FromResult(preset.Value);
             }
         }
 
+        if (debug) Console.WriteLine($"   🤖 Using pattern matching fallback");
+        
         // Fallback pattern matching
         var intent = ParseWithPatterns(normalizedPrompt);
+        
+        if (debug) Console.WriteLine($"   📤 Generated intent: Project={intent.Filters?.Project}, Status={intent.Filters?.Status?.Count}, IssueTypes={intent.Filters?.IssueTypes?.Count}");
+        
         return Task.FromResult(intent);
     }
 
