@@ -1,13 +1,10 @@
 using System.Reflection;
-using Anthropic.SDK;
 using JQLBridge.Core.Domain;
 using JQLBridge.Core.Jira;
 using JQLBridge.Core.Llm;
-using JQLBridge.Core.QueryEngine;
-using JQLBridge.Core.QueryEngine.Handlers;
-using JQLBridge.Core.PostProcessing;
-using JQLBridge.Core.PostProcessing.Processors;
-using JQLBridge.Core.PostProcessing.OutputFormatters;
+using JQLBridge.Core.Jql;
+using JQLBridge.Core.Processing;
+using JQLBridge.Core.Output;
 using OpenAI.Chat;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -67,8 +64,8 @@ try
         { 
             Issues = result.Issues,
             Groups = result.ProcessedData.Groups,
-            Calculations = result.ProcessedData.Calculations,
-            Metadata = new Dictionary<string, object>(result.ProcessedData.Metadata)
+            Calculations = result.ProcessedData.Calculations.ToDictionary(k => k.Key, k => k.Value),
+            Metadata = result.ProcessedData.Metadata.ToDictionary(k => k.Key, k => k.Value)
         } : null);
     
     if (!debug || format != "table")
@@ -138,7 +135,7 @@ static (string query, ProcessingOptions? options, bool debug) ParseArgs(string[]
             Calculate = calculate.Any() ? calculate : null,
             Aggregate = aggregate.Any() ? aggregate : null,
             OutputFormat = format,
-            CustomOptions = debug ? new Dictionary<string, object> { ["debug"] = true } : new()
+            CustomOptions = debug ? new Dictionary<string, object> { ["debug"] = true } : new Dictionary<string, object>()
         } : null;
 
     return (query, options, debug);
@@ -167,9 +164,9 @@ static void RegisterServices(IServiceCollection services, IConfiguration configu
     }
     
     // Configure LLM client
-    var llmConfig = LlmConfiguration.FromEnvironment();
+    var llmConfig = SimpleLlmConfiguration.FromEnvironment();
     
-    if (useMocks || llmConfig.Provider == LlmProvider.Mock)
+    if (useMocks || llmConfig.Provider == SimpleLlmProvider.Mock)
     {
         services.AddSingleton<ILlmClient, MockLlmClient>();
     }
@@ -177,68 +174,28 @@ static void RegisterServices(IServiceCollection services, IConfiguration configu
     {
         switch (llmConfig.Provider)
         {
-            case LlmProvider.OpenAI:
-                if (llmConfig.OpenAI == null)
+            case SimpleLlmProvider.OpenAI:
+                if (string.IsNullOrEmpty(llmConfig.ApiKey))
                 {
-                    throw new InvalidOperationException("OpenAI configuration is missing. Set LLM_API_KEY environment variable.");
+                    throw new InvalidOperationException("OpenAI API key is missing. Set LLM_API_KEY environment variable.");
                 }
                 
-                services.AddSingleton(llmConfig.OpenAI);
                 services.AddSingleton<ChatClient>(provider => 
-                    new ChatClient(model: llmConfig.OpenAI.Model, apiKey: llmConfig.OpenAI.ApiKey));
+                    new ChatClient(model: llmConfig.Model, apiKey: llmConfig.ApiKey));
                 services.AddSingleton<ILlmClient, OpenAILlmClient>();
-                break;
-                
-            case LlmProvider.Anthropic:
-                if (llmConfig.Anthropic == null)
-                {
-                    throw new InvalidOperationException("Anthropic configuration is missing. Set LLM_API_KEY environment variable.");
-                }
-                
-                services.AddSingleton(llmConfig.Anthropic);
-                services.AddSingleton<AnthropicClient>(provider =>
-                    new AnthropicClient(llmConfig.Anthropic.ApiKey));
-                services.AddSingleton<ILlmClient, AnthropicLlmClient>();
                 break;
                 
             default:
                 services.AddSingleton<ILlmClient, MockLlmClient>();
                 break;
         }
-        
-        // Wrap with resilient client for retry logic
-        services.Decorate<ILlmClient, ResilientLlmClient>();
     }
     
-    services.AddSingleton<IQueryHandlerRegistry>(provider =>
-    {
-        var registry = new QueryHandlerRegistry();
-        registry.RegisterHandler(new AssigneeHandler());
-        registry.RegisterHandler(new ProjectHandler());
-        registry.RegisterHandler(new StatusHandler());
-        registry.RegisterHandler(new IssueTypeHandler());
-        registry.RegisterHandler(new DateRangeHandler());
-        registry.RegisterHandler(new SortHandler());
-        return registry;
-    });
-    
-    services.AddSingleton<IJqlBuilder, JqlBuilder>();
-    services.AddSingleton<QueryEngine>();
+    services.AddSingleton<ISimpleJqlBuilder, SimpleJqlBuilder>();
     
     // Post-processing services
     services.AddSingleton<IFieldAccessor, FieldAccessor>();
-    services.AddSingleton<IGroupingEngine, GroupingEngine>();
-    services.AddSingleton<ICalculationEngine, CalculationEngine>();
-    services.AddSingleton<IAggregationEngine, AggregationEngine>();
-    // Register processors in pipeline
-    services.AddSingleton<IDataProcessingPipeline>(provider =>
-    {
-        var pipeline = new DataProcessingPipeline();
-        pipeline.RegisterProcessor(new GroupingProcessor(provider.GetRequiredService<IGroupingEngine>()));
-        pipeline.RegisterProcessor(new CalculationProcessor(provider.GetRequiredService<ICalculationEngine>()));
-        pipeline.RegisterProcessor(new AggregationProcessor(provider.GetRequiredService<IAggregationEngine>()));
-        return pipeline;
-    });
+    services.AddSingleton<IUnifiedProcessor, UnifiedProcessor>();
     
     // Register output formatters
     services.AddSingleton<OutputFormatterRegistry>(provider =>
@@ -267,16 +224,16 @@ public class AppConfiguration
 public class QueryRunner
 {
     private readonly ILlmClient _llmClient;
-    private readonly QueryEngine _queryEngine;
+    private readonly ISimpleJqlBuilder _jqlBuilder;
     private readonly IJiraClient _jiraClient;
-    private readonly IDataProcessingPipeline _processingPipeline;
+    private readonly IUnifiedProcessor _processor;
 
-    public QueryRunner(ILlmClient llmClient, QueryEngine queryEngine, IJiraClient jiraClient, IDataProcessingPipeline processingPipeline)
+    public QueryRunner(ILlmClient llmClient, ISimpleJqlBuilder jqlBuilder, IJiraClient jiraClient, IUnifiedProcessor processor)
     {
         _llmClient = llmClient;
-        _queryEngine = queryEngine;
+        _jqlBuilder = jqlBuilder;
         _jiraClient = jiraClient;
-        _processingPipeline = processingPipeline;
+        _processor = processor;
     }
 
     public async Task<QueryResult> RunQueryAsync(string naturalLanguageQuery, ProcessingOptions? processingOptions = null, bool debug = false)
@@ -295,11 +252,11 @@ public class QueryRunner
             Search = intent.Search,
             Sort = intent.Sort?.Count,
             Limit = intent.Limit,
-            Aggregations = intent.Aggregations?.Count
+            // Aggregations moved to post-processing
         });
 
         debugOutput.WriteStep("🔧 Building JQL query from intent");
-        var jqlQuery = _queryEngine.BuildQuery(intent);
+        var jqlQuery = _jqlBuilder.BuildQuery(intent);
         debugOutput.WriteSubStep("Generated JQL", jqlQuery.Query);
         if (jqlQuery.MaxResults.HasValue)
             debugOutput.WriteSubStep("Max results limit", jqlQuery.MaxResults.Value);
@@ -313,12 +270,11 @@ public class QueryRunner
         {
             debugOutput.WriteStep("⚙️ Starting post-processing pipeline");
             
-            var context = new ProcessingContext
-            {
-                Issues = result.Issues,
-                OriginalIntent = intent,
-                Options = processingOptions
-            };
+            var context = new ProcessingContext(
+                Issues: result.Issues,
+                OriginalIntent: intent,
+                Options: processingOptions
+            );
             
             if (processingOptions.GroupBy?.Any() == true)
                 debugOutput.WriteSubStep("Group by fields", processingOptions.GroupBy);
@@ -327,7 +283,7 @@ public class QueryRunner
             if (processingOptions.Aggregate?.Any() == true)
                 debugOutput.WriteSubStep("Aggregations", processingOptions.Aggregate);
             
-            var processed = await _processingPipeline.ProcessAsync(context);
+            var processed = await _processor.ProcessAsync(context);
             
             debugOutput.WriteSubStep("Processing complete", new
             {
@@ -341,7 +297,7 @@ public class QueryRunner
                 ProcessedData = new ProcessedData(
                     Groups: processed.Groups,
                     Calculations: processed.Calculations,
-                    Metadata: new Dictionary<string, object>(processed.Metadata)
+                    Metadata: processed.Metadata
                 )
             };
         }

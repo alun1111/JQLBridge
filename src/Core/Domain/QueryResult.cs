@@ -19,6 +19,3 @@ public record DataGroup(
     IReadOnlyList<DataGroup>? SubGroups = null,
     IReadOnlyDictionary<string, object>? Aggregations = null);
 
-public record AggregationResult(
-    AggregationType Type,
-    object Value);

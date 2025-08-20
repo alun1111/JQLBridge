@@ -2,7 +2,7 @@ using System.Net;
 using System.Text.Json;
 using JQLBridge.Core.Domain;
 using JQLBridge.Core.Jira;
-using JQLBridge.Core.QueryEngine;
+using JQLBridge.Core.Jql;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Moq.Protected;

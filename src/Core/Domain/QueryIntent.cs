@@ -4,8 +4,7 @@ public record QueryIntent(
     QueryFilters? Filters = null,
     string? Search = null,
     IReadOnlyList<SortField>? Sort = null,
-    int? Limit = null,
-    IReadOnlyList<Aggregation>? Aggregations = null);
+    int? Limit = null);
 
 public record QueryFilters(
     string? Project = null,
@@ -33,14 +32,3 @@ public enum SortOrder
     Desc
 }
 
-public record Aggregation(
-    AggregationType Type,
-    string? Field = null);
-
-public enum AggregationType
-{
-    Count,
-    CountByStatus,
-    CountByAssignee,
-    CountByPriority
-}

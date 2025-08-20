@@ -1,5 +1,5 @@
 using JQLBridge.Core.Domain;
-using JQLBridge.Core.QueryEngine;
+using JQLBridge.Core.Jql;
 
 namespace JQLBridge.Core.Jira;
 

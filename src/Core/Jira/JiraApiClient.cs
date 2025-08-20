@@ -2,7 +2,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using JQLBridge.Core.Domain;
-using JQLBridge.Core.QueryEngine;
+using JQLBridge.Core.Jql;
 using Microsoft.Extensions.Logging;
 
 namespace JQLBridge.Core.Jira;
